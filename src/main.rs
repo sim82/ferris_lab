@@ -4,12 +4,20 @@ use bevy::prelude::*;
 use bevy_ecs_tilemap::prelude::*;
 
 use ferris_lab::spritesheet::{self};
-use pathfinding::{directed::astar, num_traits::Zero};
+use pathfinding::{
+    directed::astar,
+    num_traits::{Signed, Zero},
+};
 
 #[derive(Eq, PartialEq, Hash, Clone, Debug)]
 struct Ferris {
     pos: UVec2,
     keys: [bool; 3],
+}
+
+#[derive(Default)]
+struct TargetTracker {
+    count: u32,
 }
 
 struct EndPos(UVec2);
@@ -53,7 +61,7 @@ fn update_camera(
         let target_translation = target_transform.translation;
         for (mut camera_transform, mut follow_camera) in camera_query.iter_mut() {
             // TODO: zoom out slightly during movement
-            camera_transform.scale = Vec3::new(0.25, 0.25, 1.0);
+            camera_transform.scale = Vec3::new(0.5, 0.5, 1.0);
 
             let xoffs = target_translation.x - camera_transform.translation.x;
             let yoffs = target_translation.y - camera_transform.translation.y;
@@ -101,6 +109,7 @@ fn main() {
         .add_system(process_loaded_tile_maps.system())
         .add_system(character_input.system())
         .add_system(play_solution.system())
+        .add_system(animate_character_system.system())
         // .add_system(show_solution)
         // .add_system(dump_tiles.system())
         .run();
@@ -153,7 +162,7 @@ fn init_ferris(
         let texture_atlas = TextureAtlas::from_grid(texture_handle, Vec2::new(16.0, 16.0), 10, 1);
         let texture_atlas_handle = texture_atlases.add(texture_atlas);
 
-        let mut timer = Timer::from_seconds(0.2, true);
+        let timer = Timer::from_seconds(0.1, true);
         // timer.pause();
 
         commands
@@ -250,18 +259,18 @@ fn is_walkable_tile(texture_index: u16) -> bool {
     let res = (5..=7).contains(&texture_index)
         || texture_index == START_TILE
         || texture_index == END_TILE;
-    info!("{} {}", texture_index, res);
+    // info!("{} {}", texture_index, res);
     res
 }
 
 fn character_input(
     mut commands: Commands,
     keyboard_input: Res<Input<KeyCode>>,
-    mut query: Query<(Entity, &mut Ferris, &mut Timer, &EndPos)>,
+    mut query: Query<(Entity, &mut Ferris, &mut Timer, &EndPos, &mut TargetTracker)>,
     tile_query: Query<(&Tile, &UVec2)>,
     mut map_query: MapQuery,
 ) {
-    for (ferris_entity, mut ferris, mut timer, end_pos) in query.iter_mut() {
+    for (ferris_entity, mut ferris, mut timer, end_pos, mut target_tracker) in query.iter_mut() {
         let mut new_x = ferris.pos.x as i32;
         let mut new_y = ferris.pos.y as i32;
         for key_code in keyboard_input.get_just_pressed() {
@@ -271,7 +280,10 @@ fn character_input(
                 KeyCode::Left => new_x -= 1,
                 KeyCode::Right => new_x += 1,
                 KeyCode::R => {
-                    let solution = solve(&mut map_query, ferris.clone(), &end_pos.0, &tile_query);
+                    let mut solution =
+                        solve(&mut map_query, ferris.clone(), &end_pos.0, &tile_query);
+                    solution.pop_front();
+                    target_tracker.count += 1;
                     commands.entity(ferris_entity).insert(solution);
                 }
                 _ => (),
@@ -307,21 +319,81 @@ fn character_input(
     }
 }
 
-fn play_solution(
-    mut query: Query<(&mut Ferris, &mut VecDeque<Ferris>, &mut Timer)>,
-    time: Res<Time>,
-) {
-    for (mut ferris, mut solution, mut timer) in query.iter_mut() {
-        timer.tick(time.delta());
-        if !solution.is_empty() && timer.just_finished() {
+fn play_solution(mut query: Query<(&mut Ferris, &mut VecDeque<Ferris>), Changed<TargetTracker>>) {
+    for (mut ferris, mut solution) in query.iter_mut() {
+        // info!("next");
+        // timer.tick(time.delta());
+        if !solution.is_empty() {
             *ferris = solution.pop_front().unwrap();
         }
     }
 }
 
-fn move_ferris(mut query: Query<(&Ferris, &mut Transform)>) {
-    for (ferris, mut transform) in query.iter_mut() {
-        transform.translation = pos_to_translation(&ferris.pos);
+trait IsEplsilonZero {
+    fn is_epsilon_zero(&self) -> bool;
+}
+
+impl IsEplsilonZero for f32 {
+    fn is_epsilon_zero(&self) -> bool {
+        self.abs() < f32::EPSILON
+    }
+}
+
+fn move_ferris(mut query: Query<(&Ferris, &mut Transform, &mut TargetTracker)>) {
+    for (ferris, mut transform, mut target_tracker) in query.iter_mut() {
+        let target_pos = pos_to_translation(&ferris.pos);
+
+        let xoffs = target_pos.x - transform.translation.x;
+        let yoffs = target_pos.y - transform.translation.y;
+
+        const STEP_SIZE: f32 = 0.5;
+
+        if !xoffs.is_epsilon_zero() || !yoffs.is_epsilon_zero() {
+            if xoffs.abs() <= STEP_SIZE {
+                transform.translation.x = target_pos.x;
+            } else {
+                transform.translation.x += xoffs.signum() * STEP_SIZE;
+            }
+            if yoffs.abs() <= STEP_SIZE {
+                transform.translation.y = target_pos.y;
+            } else {
+                transform.translation.y += yoffs.signum() * STEP_SIZE;
+            }
+        }
+
+        let xoffs = target_pos.x - transform.translation.x;
+        let yoffs = target_pos.y - transform.translation.y;
+
+        if xoffs.is_epsilon_zero() && yoffs.is_epsilon_zero() {
+            target_tracker.count += 1;
+        }
+    }
+}
+
+fn animate_character_system(
+    time: Res<Time>,
+    mut query: Query<(&Ferris, &mut Transform, &mut TextureAtlasSprite, &mut Timer)>,
+) {
+    for (ferris, transform, mut sprite, mut timer) in query.iter_mut() {
+        timer.tick(time.delta());
+        if timer.just_finished() {
+            let target_pos = pos_to_translation(&ferris.pos);
+
+            let xoffs = target_pos.x - transform.translation.x;
+            let yoffs = target_pos.y - transform.translation.y;
+
+            if !xoffs.is_epsilon_zero() || !yoffs.is_epsilon_zero() {
+                sprite.index += 1;
+
+                if xoffs.signum().is_negative() {
+                    if !(0..4).contains(&sprite.index) {
+                        sprite.index = 0;
+                    }
+                } else if !(4..8).contains(&sprite.index) {
+                    sprite.index = 4;
+                }
+            }
+        }
     }
 }
 
@@ -400,6 +472,7 @@ fn process_loaded_tile_maps(
                 pos: UVec2::splat(0),
                 keys: [false; 3],
             })
-            .insert(ChaseCameraTarget);
+            .insert(ChaseCameraTarget)
+            .insert(TargetTracker::default());
     }
 }
