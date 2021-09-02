@@ -101,7 +101,7 @@ fn main() {
         .add_system(process_loaded_tile_maps.system())
         .add_system(character_input.system())
         .add_system(play_solution.system())
-        .add_system(show_solution)
+        // .add_system(show_solution)
         // .add_system(dump_tiles.system())
         .run();
 }
