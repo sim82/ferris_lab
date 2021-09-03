@@ -1,6 +1,6 @@
 use std::collections::VecDeque;
 
-use bevy::prelude::*;
+use bevy::{prelude::*, transform};
 use bevy_ecs_tilemap::prelude::*;
 
 use ferris_lab::spritesheet::{self};
@@ -110,23 +110,25 @@ fn main() {
         .add_system(character_input.system())
         .add_system(play_solution.system())
         .add_system(animate_character_system.system())
+        .add_system(map_position.system())
         // .add_system(show_solution)
         // .add_system(dump_tiles.system())
         .run();
 }
 
-fn dump_tiles(tile_query: Query<(&Tile, &UVec2)>) {
+fn dump_tiles(tile_query: Query<(&Tile, &TilePos)>) {
     for (tile, pos) in tile_query.iter() {
         println!("{:?} {:?}", tile, pos);
     }
 }
 
 fn pos_to_translation(pos: &UVec2) -> Vec3 {
-    Vec3::new(
-        (pos.x * 16) as f32 + 8.0,
-        ((16 - pos.y) * 16) as f32 * -1.0 + 8.0,
-        0.0,
-    )
+    // Vec3::new(
+    //     (pos.x * 16) as f32 + 8.0,
+    //     ((16 - pos.y) * 16) as f32 * -1.0 + 8.0,
+    //     0.0,
+    // )
+    Vec3::new((pos.x * 16) as f32 + 8.0, (pos.y * 16) as f32 + 8.0, 0.0)
 }
 
 const START_TILE: u16 = 18;
@@ -138,7 +140,7 @@ const LAYER_ID: u16 = 1;
 fn init_ferris(
     mut commands: Commands,
     mut query: Query<(Entity, &mut Ferris), Added<Ferris>>,
-    tile_query: Query<(&Tile, &UVec2)>,
+    tile_query: Query<(&Tile, &TilePos)>,
     asset_server: Res<AssetServer>,
     mut texture_atlases: ResMut<Assets<TextureAtlas>>,
     mut map_query: MapQuery,
@@ -177,9 +179,9 @@ fn init_ferris(
             })
             .insert(desc)
             //            .insert(solution)
-            .insert(EndPos(end_pos))
+            .insert(EndPos(end_pos.into()))
             .insert(timer);
-        ferris.pos = start_pos;
+        ferris.pos = start_pos.into();
         // commands.entity(entity).insert_bundle
     }
 }
@@ -188,18 +190,20 @@ fn solve(
     map_query: &mut MapQuery,
     start_state: Ferris,
     end_pos: &UVec2,
-    query: &Query<(&Tile, &UVec2)>,
+    query: &Query<(&Tile, &TilePos)>,
 ) -> VecDeque<Ferris> {
     let successors = |state: &Ferris| {
-        let neigbors = map_query.get_tile_neighbors(state.pos, LEVEL_ID, LAYER_ID);
-
+        let neighbor_pos = get_neighboring_pos(state.pos.into());
         let mut successors = Vec::new();
-        for (pos, tile) in neigbors.iter().take(4) {
-            let mut new_state = state.clone();
-            new_state.pos = pos.as_u32();
 
-            if let Some(tile) = tile {
-                if let Ok((tile, _)) = query.get(*tile) {
+        for pos in neighbor_pos.iter().take(4).filter_map(|f| f.as_ref()) {
+            let mut new_state = state.clone();
+            new_state.pos = (*pos).into();
+
+            info!("pos: {:?}", pos);
+
+            if let Ok(tile_ent) = map_query.get_tile_entity(*pos, LEVEL_ID, LAYER_ID) {
+                if let Ok((tile, _)) = query.get(tile_ent) {
                     if tile.texture_index == END_TILE
                         || ((2..=4).contains(&tile.texture_index)
                             && new_state.keys[(tile.texture_index - 2) as usize])
@@ -267,7 +271,7 @@ fn character_input(
     mut commands: Commands,
     keyboard_input: Res<Input<KeyCode>>,
     mut query: Query<(Entity, &mut Ferris, &mut Timer, &EndPos, &mut TargetTracker)>,
-    tile_query: Query<(&Tile, &UVec2)>,
+    tile_query: Query<(&Tile, &TilePos)>,
     mut map_query: MapQuery,
 ) {
     for (ferris_entity, mut ferris, mut timer, end_pos, mut target_tracker) in query.iter_mut() {
@@ -294,7 +298,7 @@ fn character_input(
         new_y = new_y.clamp(0, 15);
         let mut can_move = true;
         let mut despawn = false;
-        let new_pos = UVec2::new(new_x as u32, new_y as u32);
+        let new_pos = TilePos(new_x as u32, new_y as u32);
         if let Ok(tile_ent) = map_query.get_tile_entity(new_pos, LEVEL_ID, LAYER_ID) {
             if let Ok((tile, _)) = tile_query.get(tile_ent) {
                 if (5..=7).contains(&tile.texture_index) {
@@ -314,7 +318,7 @@ fn character_input(
             map_query.notify_chunk_for_tile(new_pos, LEVEL_ID, LAYER_ID);
         }
         if can_move {
-            ferris.pos = new_pos;
+            ferris.pos = new_pos.into();
         }
     }
 }
@@ -405,7 +409,7 @@ fn process_loaded_tile_maps(
     maps: Res<Assets<LdtkMap>>,
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<ColorMaterial>>,
-    mut query: Query<(Entity, &Handle<LdtkMap>, &mut Map)>,
+    mut query: Query<(Entity, &Handle<LdtkMap>, &mut Map, &mut Transform)>,
     new_maps: Query<&Handle<LdtkMap>, Added<Handle<LdtkMap>>>,
     layer_query: Query<&Layer>,
     chunk_query: Query<&Chunk>,
@@ -440,31 +444,34 @@ fn process_loaded_tile_maps(
     }
 
     for changed_map in changed_maps.iter() {
-        for (_, map_handle, mut map) in query.iter_mut() {
+        for (_, map_handle, mut map, mut transform) in query.iter_mut() {
             // only deal with currently changed map
             if map_handle != changed_map {
                 continue;
             }
+
+            transform.translation.y = 16.0 * 16.0;
         }
 
-        info!("changed map: {:?}", changed_map);
-        if let Some(ldtk_map) = maps.get(changed_map) {
-            let layers = ldtk_map
-                .project
-                .get_level(0)
-                .unwrap()
-                .layer_instances
-                .as_ref()
-                .unwrap();
+        // info!("changed map: {:?}", changed_map);
+        // if let Some(ldtk_map) = maps.get(changed_map) {
+        //     let layers = ldtk_map
+        //         .project
+        //         .get_level(258)
+        //         .unwrap()
+        //         .layer_instances
+        //         .as_ref()
+        //         .unwrap();
 
-            for layer in layers {
-                info!("layer: {} {}", layer.identifier, layer.layer_def_uid);
-            }
-        }
+        //     for layer in layers {
+        //         info!("layer: {} {}", layer.identifier, layer.layer_def_uid);
+        //     }
+        // }
 
         for (entity, _) in ferris_query.iter() {
             commands.entity(entity).despawn();
         }
+        // transform.translation.y = map.
 
         commands
             .spawn()
@@ -474,5 +481,25 @@ fn process_loaded_tile_maps(
             })
             .insert(ChaseCameraTarget)
             .insert(TargetTracker::default());
+    }
+}
+
+fn map_position(
+    mut map_query: Query<(&Map, &mut Transform), Changed<Map>>,
+    layer_query: Query<&Layer>,
+) {
+    for (map, mut transform) in map_query.iter_mut() {
+        info!("new map: {:?}", map.get_layers());
+
+        let mut maxy = 0;
+
+        for (_, layer_entity) in map.get_layers() {
+            if let Ok(layer) = layer_query.get(layer_entity) {
+                info!("layer size: {:?}", layer.settings.map_size);
+                maxy = maxy.max(layer.get_layer_size_in_tiles().1);
+            }
+        }
+        info!("maxy: {}", maxy);
+        transform.translation.y = maxy as f32 * 16.0;
     }
 }
