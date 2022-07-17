@@ -1,6 +1,7 @@
 use std::collections::VecDeque;
 
 use bevy::{prelude::*, transform};
+use bevy_ecs_ldtk::prelude::*;
 use bevy_ecs_tilemap::prelude::*;
 
 use ferris_lab::spritesheet::{self};
@@ -9,25 +10,27 @@ use pathfinding::{
     num_traits::{Signed, Zero},
 };
 
-#[derive(Eq, PartialEq, Hash, Clone, Debug)]
+#[derive(Eq, PartialEq, Hash, Clone, Debug, Component)]
 struct Ferris {
     pos: UVec2,
     keys: [bool; 3],
 }
 
-#[derive(Default)]
+#[derive(Default, Component)]
 struct TargetTracker {
     count: u32,
 }
 
+#[derive(Component)]
 struct EndPos(UVec2);
 
-#[derive(Default)]
+#[derive(Default, Component)]
 struct ChaseCamera {
     x_moving: bool,
     y_moving: bool,
 }
 
+#[derive(Component)]
 struct ChaseCameraTarget;
 
 fn startup(mut commands: Commands, asset_server: Res<AssetServer>) {
@@ -35,13 +38,13 @@ fn startup(mut commands: Commands, asset_server: Res<AssetServer>) {
         .spawn_bundle(OrthographicCameraBundle::new_2d())
         .insert(ChaseCamera::default());
 
-    let handle: Handle<LdtkMap> = asset_server.load("labyrinth.ldtk");
+    let handle: Handle<LdtkAsset> = asset_server.load("labyrinth.ldtk");
 
     let map_entity = commands.spawn().id();
 
-    commands.entity(map_entity).insert_bundle(LdtkMapBundle {
-        ldtk_map: handle,
-        map: Map::new(0u16, map_entity),
+    commands.entity(map_entity).insert_bundle(LdtkWorldBundle {
+        ldtk_handle: handle,
+        // map: Map::new(0u16, map_entity),
         transform: Transform::from_xyz(0.0, 0.0, 0.0),
         ..Default::default()
     });
@@ -86,9 +89,9 @@ fn update_camera(
 }
 
 fn main() {
-    env_logger::Builder::from_default_env()
-        .filter_level(log::LevelFilter::Info)
-        .init();
+    // env_logger::Builder::from_default_env()
+    //     .filter_level(log::LevelFilter::Info)
+    //     .init();
 
     App::new()
         .insert_resource(WindowDescriptor {
@@ -98,19 +101,19 @@ fn main() {
             ..Default::default()
         })
         .add_plugins(DefaultPlugins)
-        .add_plugin(TilemapPlugin)
+        // .add_plugin(TilemapPlugin)
         .add_plugin(LdtkPlugin)
-        .add_startup_system(startup.system())
-        .add_system(update_camera.system())
-        // .add_system(ferris_lab::camera::movement.system())
-        .add_system(ferris_lab::texture::set_texture_filters_to_nearest.system())
-        .add_system(init_ferris.system())
-        .add_system(move_ferris.system())
-        .add_system(process_loaded_tile_maps.system())
-        .add_system(character_input.system())
-        .add_system(play_solution.system())
-        .add_system(animate_character_system.system())
-        .add_system(map_position.system())
+        .add_startup_system(startup)
+        .add_system(update_camera)
+        // .add_system(ferris_lab::camera::movement)
+        // .add_system(ferris_lab::texture::set_texture_filters_to_nearest)
+        .add_system(init_ferris)
+        .add_system(move_ferris)
+        .add_system(process_loaded_tile_maps)
+        .add_system(character_input)
+        .add_system(play_solution)
+        .add_system(animate_character_system)
+        .add_system(map_position)
         // .add_system(show_solution)
         // .add_system(dump_tiles.system())
         .run();
@@ -180,7 +183,7 @@ fn init_ferris(
             .insert(desc)
             //            .insert(solution)
             .insert(EndPos(end_pos.into()))
-            .insert(timer);
+            .insert(FerrisTimer(timer));
         ferris.pos = start_pos.into();
         // commands.entity(entity).insert_bundle
     }
@@ -221,7 +224,7 @@ fn solve(
         successors
     };
     let heuristic = |state: &Ferris| {
-        let d = end_pos.as_i32() - state.pos.as_i32();
+        let d = end_pos.as_ivec2() - state.pos.as_ivec2();
         d.x.abs() + d.y.abs()
     };
     let success = |state: &Ferris| state.pos == *end_pos;
@@ -239,19 +242,22 @@ fn solve(
     }
 }
 
+#[derive(Component)]
+struct Solution(VecDeque<Ferris>);
+
 fn show_solution(
     mut commands: Commands,
     asset_server: Res<AssetServer>,
-    mut materials: ResMut<Assets<ColorMaterial>>,
-    solution_query: Query<&VecDeque<Ferris>, Added<VecDeque<Ferris>>>,
+    mut materials: ResMut<Assets<Image>>,
+    solution_query: Query<&Solution, Added<Solution>>,
 ) {
     for solution in solution_query.iter() {
         let texture_handle = asset_server.load("bread_crumb.png");
 
-        for state in solution.iter() {
+        for state in solution.0.iter() {
             info!("{:?}", state);
             commands.spawn_bundle(SpriteBundle {
-                material: materials.add(texture_handle.clone().into()),
+                texture: texture_handle.clone(),
                 transform: Transform::from_translation(pos_to_translation(&state.pos)),
                 ..Default::default()
             });
@@ -267,10 +273,19 @@ fn is_walkable_tile(texture_index: u16) -> bool {
     res
 }
 
+#[derive(Component)]
+struct FerrisTimer(Timer);
+
 fn character_input(
     mut commands: Commands,
     keyboard_input: Res<Input<KeyCode>>,
-    mut query: Query<(Entity, &mut Ferris, &mut Timer, &EndPos, &mut TargetTracker)>,
+    mut query: Query<(
+        Entity,
+        &mut Ferris,
+        &mut FerrisTimer,
+        &EndPos,
+        &mut TargetTracker,
+    )>,
     tile_query: Query<(&Tile, &TilePos)>,
     mut map_query: MapQuery,
 ) {
@@ -288,7 +303,7 @@ fn character_input(
                         solve(&mut map_query, ferris.clone(), &end_pos.0, &tile_query);
                     solution.pop_front();
                     target_tracker.count += 1;
-                    commands.entity(ferris_entity).insert(solution);
+                    commands.entity(ferris_entity).insert(Solution(solution));
                 }
                 _ => (),
             }
@@ -323,12 +338,12 @@ fn character_input(
     }
 }
 
-fn play_solution(mut query: Query<(&mut Ferris, &mut VecDeque<Ferris>), Changed<TargetTracker>>) {
+fn play_solution(mut query: Query<(&mut Ferris, &mut Solution), Changed<TargetTracker>>) {
     for (mut ferris, mut solution) in query.iter_mut() {
         // info!("next");
         // timer.tick(time.delta());
-        if !solution.is_empty() {
-            *ferris = solution.pop_front().unwrap();
+        if !solution.0.is_empty() {
+            *ferris = solution.0.pop_front().unwrap();
         }
     }
 }
@@ -376,11 +391,16 @@ fn move_ferris(mut query: Query<(&Ferris, &mut Transform, &mut TargetTracker)>) 
 
 fn animate_character_system(
     time: Res<Time>,
-    mut query: Query<(&Ferris, &mut Transform, &mut TextureAtlasSprite, &mut Timer)>,
+    mut query: Query<(
+        &Ferris,
+        &mut Transform,
+        &mut TextureAtlasSprite,
+        &mut FerrisTimer,
+    )>,
 ) {
     for (ferris, transform, mut sprite, mut timer) in query.iter_mut() {
-        timer.tick(time.delta());
-        if timer.just_finished() {
+        timer.0.tick(time.delta());
+        if timer.0.just_finished() {
             let target_pos = pos_to_translation(&ferris.pos);
 
             let xoffs = target_pos.x - transform.translation.x;
@@ -405,29 +425,29 @@ fn animate_character_system(
 
 fn process_loaded_tile_maps(
     mut commands: Commands,
-    mut map_events: EventReader<AssetEvent<LdtkMap>>,
-    maps: Res<Assets<LdtkMap>>,
+    mut map_events: EventReader<AssetEvent<LdtkAsset>>,
+    maps: Res<Assets<LdtkAsset>>,
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<ColorMaterial>>,
-    mut query: Query<(Entity, &Handle<LdtkMap>, &mut Map, &mut Transform)>,
-    new_maps: Query<&Handle<LdtkMap>, Added<Handle<LdtkMap>>>,
+    mut query: Query<(Entity, &Handle<LdtkAsset>, &mut Map, &mut Transform)>,
+    new_maps: Query<&Handle<LdtkAsset>, Added<Handle<LdtkAsset>>>,
     layer_query: Query<&Layer>,
     chunk_query: Query<&Chunk>,
     ferris_query: Query<(Entity, &Ferris)>,
 ) {
-    let mut changed_maps = Vec::<Handle<LdtkMap>>::default();
+    let mut changed_maps = Vec::<Handle<LdtkAsset>>::default();
     for event in map_events.iter() {
         match event {
             AssetEvent::Created { handle } => {
-                log::info!("Map added!");
+                info!("Map added!");
                 changed_maps.push(handle.clone());
             }
             AssetEvent::Modified { handle } => {
-                log::info!("Map changed!");
+                info!("Map changed!");
                 changed_maps.push(handle.clone());
             }
             AssetEvent::Removed { handle } => {
-                log::info!("Map removed!");
+                info!("Map removed!");
                 // if mesh was modified and removed in the same update, ignore the modification
                 // events are ordered so future modification events are ok
                 changed_maps = changed_maps

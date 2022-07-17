@@ -2,17 +2,18 @@
 name = "ferris_lab"
 version = "0.1.0"
 authors = ["Simon A. Berger <simberger@gmail.com>"]
-edition = "2018"
+edition = "2021"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
-bevy_ecs_tilemap = {git="https://github.com/sim82/bevy_ecs_tilemap.git", branch="bevy-track", features=["ldtk"]}
-bevy = { git="https://github.com/bevyengine/bevy", branch ="main", default-features=true }
-pathfinding = "^2"
-log = "^0.4"
-anyhow = { version="^1"}
+bevy_ecs_ldtk = { version = "0.3" }
+bevy_ecs_tilemap = { version = "0.6" }
+bevy = { version = "0.7" }
+pathfinding = "^3"
+anyhow = { version = "^1" }
 rand = "^0.8"
-env_logger = "^0.8"
+env_logger = "^0.9"
 serde = { version = "^1", features = ["derive"] }
-serde_json = { version="^1" }
+serde_json = { version = "^1" }
+ldtk_rust = "0.6"
